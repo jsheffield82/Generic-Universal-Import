@@ -1,0 +1,63 @@
+USE [dw3_lake]
+GO
+/****** Object:  StoredProcedure [dbo].[usp_personLookup]    Script Date: 1/26/2023 10:11:29 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER PROCEDURE [dbo].[usp_personLookup] (
+	@lastName VARCHAR(200), 
+	@firstName VARCHAR(200), 
+	@birthDate VARCHAR(50), 
+	@studentNumber VARCHAR(20), 
+	@stateID VARCHAR(20), 
+	@employeeNumber VARCHAR(20)) AS
+BEGIN
+ /******************************************************************************************
+** Name:  usp_SSRSStudentLookupLive
+** Desc:  Stored Procedure for SSRS Student Lookup
+** Auth:  RRN
+** Date:  08/08/2016
+**************************
+** Change History
+**************************
+** PR   Date			Author		Description	
+** --   ----------		-------		------------------------------------
+** 1    08/08/2016      RRN			Creation of stored procedure
+******************
+** TO DO:
+******************
+
+*******************************************************************************************/
+
+/*
+--For Testing Purposes
+DECLARE @lastName VARCHAR(200) = 'Nader'
+DECLARE @firstName VARCHAR(200) = ''
+DECLARE @birthDate VARCHAR(50) = ''
+DECLARE @studentNumber VARCHAR(20) = ''
+*/
+
+/* CHECK TO SEE IF AT LEAST ONE OF THE VARIABLES HAS AT LEAST 3 CHARACTERS */
+IF LEN(ISNULL(@lastName, '')) >= 3 OR LEN(ISNULL(@firstName, '')) >= 3 OR LEN(ISNULL(@birthDate, '')) > 3 OR LEN(ISNULL(@studentNumber, '')) >= 1
+	BEGIN
+
+		SELECT ds.studentKey, 
+			ds.studentNumber, 
+			ds.saisNumber,  
+			ds.lastName, 
+			ds.firstName, 
+			ISNULL(ds.middleName, '') AS middleName, 
+			ds.gender, 
+			CONVERT(VARCHAR, CONVERT(DATE, CONVERT(VARCHAR, ds.birthDate)), 101) AS birthDate
+		FROM dw3_Live.dbo.DimStudent ds WITH (NOLOCK)
+		WHERE ISNULL(ds.lastName, '') LIKE '%' + ISNULL(@lastName, '') + '%'
+				AND ISNULL(ds.firstName, '') LIKE '%' + ISNULL(@firstName, '') + '%'
+				AND (ISNULL(@birthDate, '') = '' OR CONVERT(VARCHAR, CONVERT(DATE, CONVERT(VARCHAR, ds.birthDate)), 101) = @birthDate)
+				AND (ISNULL(@studentNumber, '') = '' OR CONVERT(VARCHAR, ds.studentNumber) = @studentNumber)
+		ORDER BY ds.lastName, ds.firstName, ds.middleName
+	END
+
+
+END
