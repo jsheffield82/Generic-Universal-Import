@@ -1,0 +1,55 @@
+USE [dw3_lake]
+GO
+/****** Object:  StoredProcedure [dbo].[usp_ETL_IC_Live]    Script Date: 1/26/2023 10:21:55 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+ALTER PROCEDURE [dbo].[usp_ETL_IC_Live]
+AS
+BEGIN
+---------------------------------------------------------------------------------------------
+-- START PULLING DATA FROM IMPORT PROCESSED
+---------------------------------------------------------------------------------------------
+SET NOCOUNT ON;
+
+/* delcare variables */
+	declare @row int = 1
+	declare @rowTotal int 
+	declare @SQLText nvarchar(max)
+
+/* */
+	if object_id('tempdb..#toImport') is not null
+	exec ('drop table #toImport');
+
+	create table #toImport
+		(colKey int identity (1,1) not null, masterKey int, sourceName varchar(max), sourceVersion varchar(max), procedureName varchar(max)) 
+	insert into #toImport (masterKey, sourceName, sourceVersion, procedureName)
+	select distinct
+		ip.masterKey,
+		im.sourceName,
+		im.sourceVersion,
+		im.procedureName
+	from dw3_lake.dbo.ImportProcessed ip
+	inner join dw3_lake.dbo.ImportMaster im on im.masterKey = ip.masterKey
+	where convert(varchar(10),ip.updatedWhen, 101) = convert(varchar(10),getdate(), 101)
+
+	/* setting first row */
+		set @row = 1
+	/* finding total rows from the staging rows */
+		set @rowTotal = (select count(masterKey)
+			from #toImport)
+
+/* loop to go through rows of the table */
+	while (@row <= @rowTotal)
+		begin
+			/* setting stored procedure to execute */
+				set @SQLText = 'execute ' + (select procedureName from #toImport where colKey = @row)
+
+			exec sp_executesql @SQLText
+			set @row = @row + 1;
+		end
+end
