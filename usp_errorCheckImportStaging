@@ -1,0 +1,298 @@
+USE [dw3_lake]
+GO
+/****** Object:  StoredProcedure [dbo].[usp_errorCheckImportStaging]    Script Date: 1/26/2023 10:07:44 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- Changes: JAB 5/15/2019 added check to IC if the student number identity is active by using ICs individual view.
+--          JAB 5/15/2019 reenabled the check for birthdate to elimiate most of the multiple matches issues
+ALTER PROCEDURE [dbo].[usp_errorCheckImportStaging] 
+@masterKey INT = 0, -- if no masterkey set, then default to 0 so that no check happens
+@updatedBy VARCHAR(100) = '' 
+AS
+BEGIN
+
+--	declare @masterKey INT = 3042
+declare @studentIDColumnNumber VARCHAR(25) = ''
+declare @studentStateIDColumnNumber VARCHAR(25) = ''
+declare @studentFirstNameColumnNumber VARCHAR(25) = ''
+declare @studentLastNameColumnNumber VARCHAR(25) = ''
+declare @studentDOBColumnNumber VARCHAR(25) = ''
+declare @studentMiddleNameColumnNumber VARCHAR(25) = ''
+declare @SQLText NVARCHAR(MAX) = ''
+--	declare @updatedBy VARCHAR(100) = 'delete.me'
+
+declare @StagingKey int
+declare @StudentNumber varchar(10)
+declare @StateID varchar(20)
+declare @DOB varchar(10)
+declare @LastName varchar(50)
+declare @FirstName varchar(50)
+declare @MiddleName varchar(50)
+declare @StudentKey int
+declare @NumOfMatches int
+
+--select * from AppDefinition WHERE tableName = 'importerror'
+--fieldName	fieldValue	valueDefinition
+--ERRORCODE	1	FIRSTNAME
+--ERRORCODE	2	MIDDLENAME
+--ERRORCODE	3	LASTNAME
+--ERRORCODE	4	DOB
+--ERRORCODE	5	STATEID
+--ERRORCODE	6	STUDENTNUMBER
+--ERRORCODE 7	MULTIPLE STUDENT MATCHES
+
+--Let's get the layout definitions for the errors
+if object_id('tempdb.dbo.#definitions', 'U') is not null
+	drop table #definitions
+
+select il.columnName, il.errorCode, ap.valueDefinition, valueReference1, valueReference2, valueReference3
+into #definitions
+from importLayout il
+inner join AppDefinition ap on ap.tableName = 'IMPORTERROR' and ap.fieldName = 'ERRORCODE' and ap.fieldValue = il.errorCode
+where il.masterKey = @masterKey
+
+----Create the temp table for matching the students
+if object_id('tempdb.dbo.#stagingStudentMatch', 'U') is not null 
+	drop table #stagingStudentMatch
+
+create table #stagingStudentMatch 
+(	stagingKey int,
+	studentKey int,
+	numOfMatches int)
+
+--------------------------------------------------------------------------------------------------------
+--  S T A R T   S T U D E N T   M A T C H I N G
+--------------------------------------------------------------------------------------------------------
+set @studentFirstNameColumnNumber = (select columnName from #definitions where errorCode = 1)
+set @studentMiddleNameColumnNumber = (select columnName from #definitions where errorCode = 2)
+set @studentLastNameColumnNumber = (select columnName from #definitions where errorCode = 3)
+set @studentDOBColumnNumber = (select columnName from #definitions where errorCode = 4)	
+set @studentStateIDColumnNumber = (select columnName from #definitions where errorCode = 5)
+set @studentIDColumnNumber = (select columnName from #definitions where errorCode = 6)
+
+set @SQLText = 'declare SearchCrit cursor for '
+set @SQLText += 'select StagingKey'
+if len(isnull(@studentIDColumnNumber, '')) <> 0 
+	set @SQLText += ', replace(' + @studentIDColumnNumber + ', ''_'', '''') as studentNumber '
+else
+	set @SQLText += ', '''' as studentNumber '
+if (len(isnull(@studentStateIDColumnNumber, '')) <> 0)
+	set @SQLText += ', replace(' + @studentStateIDColumnNumber + ', ''_'', '''') as stateID '
+else
+	set @SQLText += ', '''' as stateID '
+if (len(isnull(@studentFirstNameColumnNumber, '')) <> 0)
+	set @SQLText += ', replace(' + @studentFirstNameColumnNumber + ', ''_'', '''') as firstName '
+else
+	set @SQLText += ', '''' as firstName '
+if (len(isnull(@studentLastNameColumnNumber, '')) <> 0)
+	set @SQLText += ', replace(' + @studentLastNameColumnNumber + ', ''_'', '''') as lastName '
+else
+	set @SQLText += ', '''' as lastName '
+if (len(isnull(@studentDOBColumnNumber, '')) <> 0)
+	set @SQLText += ', replace(' + @studentDOBColumnNumber + ', ''_'', '''') as DOB '
+else
+	set @SQLText += ', '''' as DOB '
+if (len(isnull(@studentMiddleNameColumnNumber, '')) <> 0)
+	set @SQLText += ', replace(' + @studentMiddleNameColumnNumber + ', ''_'', '''') as middleName '
+else
+	set @SQLText += ', '''' as middleName '
+set @SQLText += 'from importStaging where masterKey = ' + convert(varchar, @masterKey)
+
+execute (@SQLText)
+	
+open SearchCrit
+
+fetch next from SearchCrit into @StagingKey, @StudentNumber, @StateID, @FirstName, @LastName, @DOB, @MiddleName
+while @@FETCH_STATUS = 0
+begin
+
+	set @NumOfMatches = 0
+	if @StudentNumber > ''
+	begin
+		declare StudentMatch cursor for
+		select top 1 mm.studentkey, mm.numOfMatches 
+		from (select ds.studentKey, row_number() over(partition by stg.StagingKey order by ds.studentKey) as numOfMatches 
+				from (select @StagingKey as StagingKey, ltrim(isnull(@StudentNumber,'')) as StudentNumber) as Stg
+				left join dw3_live.dbo.DimStudent ds on ds.studentNumber = stg.StudentNumber) as mm
+		order by mm.numOfMatches desc
+
+		open StudentMatch
+
+		fetch next from StudentMatch into @StudentKey, @NumOfMatches
+
+		if @NumOfMatches >= 1
+		begin
+			insert into #stagingStudentMatch
+			values (@StagingKey, @StudentKey, @NumOfMatches)
+		end
+
+		close StudentMatch
+		deallocate StudentMatch
+	end
+	if @NumOfMatches = 0 and @StateID > ''
+	begin
+		set @NumOfMatches = 0
+		set @StateID = convert(varchar(20),convert(bigint,@StateID))
+		declare StudentMatch cursor for
+		select top 1 mm.studentkey, mm.numOfMatches 
+		from (select ds.studentKey, row_number() over(partition by stg.StagingKey order by ds.studentKey) as numOfMatches 
+				from (select @StagingKey as StagingKey, ltrim(isnull(@StateID,'')) as StateID) as Stg
+				left join dw3_live.dbo.DimStudent ds on  ds.saisNumber = stg.StateID) as mm
+		order by mm.numOfMatches desc
+
+		open StudentMatch
+
+		fetch next from StudentMatch into @StudentKey, @NumOfMatches
+
+		if @NumOfMatches >= 1
+		begin
+			insert into #stagingStudentMatch
+			values (@StagingKey, @StudentKey, @NumOfMatches)
+		end
+
+		close StudentMatch
+		deallocate StudentMatch
+	end
+	if @NumOfMatches = 0 and @LastName > '' and @DOB > ''
+	begin
+		set @NumOfMatches = 0
+		
+		declare StudentMatch cursor for
+		select top 1 mm.studentkey, mm.numOfMatches 
+		from (select ds.studentKey, row_number() over(partition by stg.StagingKey order by ds.studentKey) as numOfMatches 
+				from (select @StagingKey as StagingKey, ltrim(isnull(@LastName,'')) as LastName, ltrim(isnull(@FirstName,'')) as FirstName, ltrim(isnull(@DOB,'')) as DOB) as Stg
+				left join dw3_live.dbo.DimStudent ds on (ds.lastName = stg.LastName or ds.lastName like '%' + stg.LastName + '%' or stg.LastName like '%' + ds.lastName + '%')
+														and ds.firstName = stg.FirstName and dw3_lake.dbo.udf_convertDate(CONVERT(VARCHAR, ds.birthDate)) = dw3_lake.dbo.udf_convertDate(stg.DOB)) as mm
+		order by mm.numOfMatches desc
+
+		open StudentMatch
+
+		fetch next from StudentMatch into @StudentKey, @NumOfMatches
+
+		if @NumOfMatches >= 1
+		begin
+			insert into #stagingStudentMatch
+			values (@StagingKey, @StudentKey, @NumOfMatches)
+		end
+
+		close StudentMatch
+		deallocate StudentMatch
+	end
+
+	if @NumOfMatches = 0 and @LastName > '' and @DOB = ''
+	begin
+		set @NumOfMatches = 0
+		
+		declare StudentMatch cursor for
+		select top 1 mm.studentkey, mm.numOfMatches 
+		from (select ds.studentKey, row_number() over(partition by stg.StagingKey order by ds.studentKey) as numOfMatches 
+				from (select @StagingKey as StagingKey, ltrim(isnull(@LastName,'')) as LastName, ltrim(isnull(@FirstName,'')) as FirstName, ltrim(isnull(@DOB,'')) as DOB) as Stg
+				left join dw3_live.dbo.DimStudent ds on (ds.lastName = stg.LastName or ds.lastName like '%' + stg.LastName + '%' or stg.LastName like '%' + ds.lastName + '%')
+														and ds.firstName = stg.FirstName) as mm
+		order by mm.numOfMatches desc
+
+		open StudentMatch
+
+		fetch next from StudentMatch into @StudentKey, @NumOfMatches
+
+		if @NumOfMatches >= 1
+		begin
+			insert into #stagingStudentMatch
+			values (@StagingKey, @StudentKey, @NumOfMatches)
+		end
+
+		close StudentMatch
+		deallocate StudentMatch
+	end
+	if @NumOfMatches > 1 
+		insert into importError (stagingKey, errorcode)
+		values (@StagingKey, '7')
+	if @NumOfMatches = 0 
+		insert into importError (stagingKey, errorcode)
+		values (@StagingKey, '8')
+	if @NumOfMatches = 1
+	begin
+
+		if (select top 1 ds.studentKey from dw3_live.dbo.DimStudent ds where ds.studentKey = @StudentKey and ds.firstName = @FirstName) is null and @FirstName > ''
+			insert into importError (stagingKey, errorcode)
+			values (@StagingKey, '1')
+		if (select top 1 ds.studentKey from dw3_live.dbo.DimStudent ds where ds.studentKey = @StudentKey 
+		                                                                 and (ds.middleName = @MiddleName or 
+																		      isnull(ds.middleName,'') = '' or 
+																		      (len(@MiddleName) = 1 and left(ds.middleName,1) = @MiddleName) or 
+																			  (len(ds.middleName) = 1 and left(@MiddleName,1) = ds.middleName))) is null and @MiddleName > ''
+			insert into importError (stagingKey, errorcode)
+			values (@StagingKey, '2')
+		if (select top 1 ds.studentKey from dw3_live.dbo.DimStudent ds where ds.studentKey = @StudentKey and (ds.lastName = @LastName or ds.lastName like '%' + @LastName + '%' or @LastName like '%' + ds.lastName + '%')) is null and @LastName > ''
+			insert into importError (stagingKey, errorcode)
+			values (@StagingKey, '3')
+		if (select top 1 ds.studentKey from dw3_live.dbo.DimStudent ds where ds.studentKey = @StudentKey and dw3_lake.dbo.udf_convertDate(CONVERT(VARCHAR, ds.birthDate)) = dw3_lake.dbo.udf_convertDate(@DOB)) is null and @DOB > ''
+			insert into importError (stagingKey, errorcode)
+			values (@StagingKey, '4')
+	end
+
+	fetch next from SearchCrit into @StagingKey, @StudentNumber, @StateID, @FirstName, @LastName, @DOB, @MiddleName
+end
+
+close SearchCrit
+deallocate SearchCrit
+
+--Update the importStaging table for all records that have an error
+update ist
+set errorFlag = 1
+from importStaging ist
+inner join importError ie on ie.stagingKey = ist.stagingKey
+where ist.masterKey = @masterKey
+
+------------------------------------------------------------------------------------------------------------------
+-- E N D     E R R O R     C H E C K I N G
+-----------------------------------------------------------------------------------------------------------------------
+
+---------------------------------------------------------------------------------------------------------------------------------
+-- S T A R T    M O V E   T O   P R O C E S S E D
+---------------------------------------------------------------------------------------------------------------------------------
+	
+declare movetoprocessed cursor for
+select ssm.studentKey, 0 as EmployeeKey, 0 as LocationKey, ssm.stagingKey
+from #stagingStudentMatch ssm
+inner join ImportStaging ist on ist.stagingKey = ssm.stagingKey
+where ist.masterKey = @masterKey
+	and isnull(ist.errorFlag,0) = 0
+	and ssm.studentKey is not null
+	   
+declare @numOfRecordsMovedToProcessed INT
+declare @rowNum INT = 0
+declare @processedStudentKey INT
+declare @processedEmployeeKey INT
+declare @processedLocationKey INT
+declare @processedStagingKey INT
+
+open movetoprocessed
+
+fetch next from movetoprocessed into @processedStudentKey, @processedEmployeeKey, @processedLocationKey, @processedStagingKey
+while @@FETCH_STATUS = 0
+begin
+	execute usp_moveToProcessedFromStaging @processedStagingKey, @processedStudentKey, @processedEmployeeKey, @processedLocationKey, 0, 'Matched automatically through error checking stored procedure.', @updatedBy
+	set @rowNum = @rowNum + 1
+	print convert(char(4),@rowNum) + convert(varchar,getdate())
+	fetch next from movetoprocessed into @processedStudentKey, @processedEmployeeKey, @processedLocationKey, @processedStagingKey
+end
+
+close movetoprocessed
+deallocate movetoprocessed
+---------------------------------------------------------------------------------------------------------------------------------
+-- E N D    M O V E   T O   P R O C E S S E D
+---------------------------------------------------------------------------------------------------------------------------------
+
+--Display results
+select sum(convert(int, isnull(errorFlag, 0))) as numberOfErrors, 
+		@rowNum as numberMovedToProcessed, 
+		COUNT(*) as numberOfTotalRecords
+from importStaging
+where masterKey = @masterKey
+
+END
+
+
