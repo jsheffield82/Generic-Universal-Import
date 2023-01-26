@@ -1,0 +1,41 @@
+USE [dw3_lake]
+GO
+
+/****** Object:  Table [dbo].[AppDataDictionary]    Script Date: 1/26/2023 10:26:44 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[AppDataDictionary](
+	[dataDictionaryKey] [int] NOT NULL,
+	[databaseName] [varchar](50) NOT NULL,
+	[objectType] [varchar](50) NOT NULL,
+	[objectName] [varchar](100) NOT NULL,
+	[fieldName] [varchar](50) NULL,
+	[sequenceNumber] [int] NULL,
+	[dataType] [varchar](25) NULL,
+	[dataPrecision] [int] NULL,
+	[dataScale] [int] NULL,
+	[fieldLength] [int] NULL,
+	[nullable] [bit] NULL,
+	[primaryKey] [bit] NULL,
+	[primaryKeyIdentity] [bit] NULL,
+	[foreignKey] [bit] NULL,
+	[foreignKeyTable] [varchar](50) NULL,
+	[foreignKeyField] [varchar](50) NULL,
+	[indexed] [bit] NULL,
+	[indexClustered] [bit] NULL,
+	[indexUnique] [bit] NULL,
+	[indexComposite] [bit] NULL,
+	[filter] [varchar](25) NULL,
+	[versionInfo] [varchar](25) NULL,
+	[comments] [varchar](250) NULL,
+	[updatedFrom] [varchar](50) NULL,
+	[updatedBy] [varchar](50) NULL,
+	[updatedWhen] [smalldatetime] NULL
+) ON [PRIMARY]
+GO
+
+
