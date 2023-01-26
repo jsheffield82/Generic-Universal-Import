@@ -1,0 +1,158 @@
+USE [dw3_lake]
+GO
+/****** Object:  StoredProcedure [dbo].[usp_viewErrors]    Script Date: 1/26/2023 10:11:28 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER PROCEDURE [dbo].[usp_viewErrors]
+@masterKey INT = 0,
+@stagingKey INT = 0
+AS
+BEGIN
+	--DECLARE VARIABLES
+	--DECLARE @masterKey INT = 11
+	--DECLARE @stagingKey INT = 0
+	DECLARE @studentIDColumnNumber VARCHAR(25) = ''
+	DECLARE @studentStateIDColumnNumber VARCHAR(25) = ''
+	DECLARE @studentFirstNameColumnNumber VARCHAR(25) = ''
+	DECLARE @studentLastNameColumnNumber VARCHAR(25) = ''
+	DECLARE @studentMiddleNameColumnNumber VARCHAR(25) = ''
+	DECLARE @studentDOBColumnNumber VARCHAR(25) = ''
+	DECLARE @SQLText NVARCHAR(MAX) = ''
+
+
+	--Get the column numbers for each of the error codes in the layout table from given masterKey
+	IF OBJECT_ID('tempdb.dbo.#definitions', 'U') IS NOT NULL 
+				 drop table #definitions
+
+	SELECT il.columnName, il.errorCode, ap.valueDefinition, valueReference1, valueReference2, valueReference3
+	INTO #definitions
+	FROM importLayout il
+	JOIN AppDefinition ap ON ap.tableName = 'IMPORTERROR'
+		AND ap.fieldName = 'ERRORCODE'
+		AND (ap.fieldValue = il.errorCode)
+	WHERE il.masterKey = @masterKey
+
+
+
+	--Set the column number variables from the #definitions temp table
+	SET @studentFirstNameColumnNumber = (SELECT columnName FROM #definitions WHERE errorCode = 1)
+	SET @studentLastNameColumnNumber = (SELECT columnName FROM #definitions WHERE errorCode = 3)
+	SET @studentMiddleNameColumnNumber = (SELECT columnName FROM #definitions WHERE errorCode = 2)
+	SET @studentDOBColumnNumber = (SELECT columnName FROM #definitions WHERE errorCode = 4)
+	SET @studentStateIDColumnNumber = (SELECT columnName FROM #definitions WHERE errorCode = 5)
+	SET @studentIDColumnNumber = (SELECT columnName FROM #definitions WHERE errorCode = 6)
+
+	--##studentNames will be the temp table that we use for later
+		--use of global temp table
+		IF OBJECT_ID('tempdb.dbo.##studentNames', 'U') IS NOT NULL 
+					 drop table ##studentNames
+
+	--Start constructing the SQLTEXT
+		SET @SQLText = 'SELECT '
+
+		--If we find a first name column, then set it to that columnNumber
+		IF (LEN(ISNULL(@studentFirstNameColumnNumber, '')) <> 0 )
+			BEGIN
+					SET @SQLText += '' + @studentFirstNameColumnNumber + ' as firstName, '
+			END
+		ELSE 
+			BEGIN
+					SET @SQLText += 'NULL as firstName, '	
+			END
+		--If we find a middle name column, then set it to that columnNumber
+		IF (LEN(ISNULL(@studentMiddleNameColumnNumber, '')) <> 0 )
+			BEGIN
+					SET @SQLText += '' + @studentMiddleNameColumnNumber + ' as middleName, '
+			END
+		ELSE 
+			BEGIN
+					SET @SQLText += 'NULL as middleName, '	
+			END
+		--If we find a last name column, then set it to that columnNumber
+		IF (LEN(ISNULL(@studentLastNameColumnNumber, '')) <> 0 )
+			BEGIN
+					SET @SQLText += '' + @studentLastNameColumnNumber + ' as lastName, '
+			END
+		ELSE 
+			BEGIN
+					SET @SQLText += 'NULL as lastName, '	
+			END
+		--If we find a birthDate column, then set it to that columnNumber
+		IF (LEN(ISNULL(@studentDOBColumnNumber, '')) <> 0 )
+			BEGIN
+					SET @SQLText += 'CASE WHEN dw3_lake.dbo.udf_isDate(' + @studentDOBColumnNumber + ') = 0 
+										 THEN NULL 
+										 ELSE dw3_lake.dbo.udf_convertDate(' + @studentDOBColumnNumber + ') END as birthDate, '
+			END
+		ELSE
+			BEGIN
+					SET @SQLText += 'NULL as birthDate, '	
+			END
+		--If we find a stateID column, then set it to that columnNumber
+		IF (LEN(ISNULL(@studentStateIDColumnNumber, '')) <> 0 )
+			BEGIN
+					SET @SQLText += '' + @studentStateIDColumnNumber + ' as stateID, '
+			END
+		ELSE 
+			BEGIN
+					SET @SQLText += 'NULL as stateID, '	
+			END
+		--If we find a studentID column, then set it to that columnNumber
+		IF (LEN(ISNULL(@studentIDColumnNumber, '')) <> 0 )
+			BEGIN
+					/* replace any _ in a studentID column due to Student Grad Tracker import */
+					SET @SQLText += 'REPLACE(' + @studentIDColumnNumber + ', ''_'', '''') as studentNumber, '
+			END
+		ELSE 
+			BEGIN
+					SET @SQLText += 'NULL as studentNumber, '	
+			END
+
+			SET @SQLText += ' stagingKey, masterKey
+						INTO ##studentNames 
+						FROM importStaging 
+						WHERE masterKey = ' + CONVERT(VARCHAR, @masterKey) + '
+							AND errorFlag = 1 '
+		IF (ISNULL(@stagingKey,0) <> 0)
+			BEGIN
+					SET @SQLText += ' AND stagingKey = ' + CONVERT(VARCHAR, @stagingKey)
+			END
+
+		EXEC    sp_executesql @SQLText
+
+		IF OBJECT_ID('tempdb.dbo.#errors', 'U') IS NOT NULL 
+			 drop table #errors
+
+		--Display the records with their error messages
+		SELECT sn.*, STUFF(' ' + (SELECT  CONVERT(VARCHAR, ad.valueDefinition) + ' <br /> '
+							  FROM importError ie
+							  JOIN AppDefinition ad ON (ad.fieldValue = ie.errorCode)
+								AND ad.tableName = 'IMPORTERROR'
+								AND ad.fieldName = 'ERRORCODE'
+							  WHERE sn.stagingKey = ie.stagingKey
+							  ORDER BY errorCode
+							  FOR XML PATH('')), 1, 1, '') AS errorMessage,
+					'CleanUp.aspx?masterKey=' + CONVERT(VARCHAR, @masterKey) + '&stagingKey=' + CONVERT(VARCHAR, stagingKey) as updateURL
+		INTO #errors
+		FROM ##studentNames sn
+
+		IF OBJECT_ID('tempdb.dbo.##studentNames', 'U') IS NOT NULL 
+			 drop table ##studentNames
+		
+		SELECT firstName, 
+			middleName, 
+			lastName, 
+			CONVERT(VARCHAR, dbo.udf_convertDate(birthDate), 101) AS birthDate,
+			stateID, 
+			studentNumber, 
+			stagingKey, 
+			masterKey, 
+			errorMessage, 
+			updateURL
+		FROM #errors
+
+END
+
