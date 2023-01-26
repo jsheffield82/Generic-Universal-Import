@@ -1,0 +1,601 @@
+USE [dw3_lake]
+GO
+/****** Object:  StoredProcedure [dbo].[usp_Export_AASA_202206_IC_Live]    Script Date: 1/26/2023 10:22:56 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- =============================================
+-- Author:		Thomas Nadel
+-- Create date: 06/07/2022
+-- Description:	ETL to IC for AASA
+-- =============================================
+ALTER PROCEDURE [dbo].[usp_Export_AASA_202206_IC_Live]
+
+AS
+BEGIN
+	-- SET NOCOUNT ON added to prevent extra result sets from
+	-- interfering with SELECT statements.
+	SET NOCOUNT ON;
+
+--============================================================================================================================--
+/* Lake to Temp table */
+--============================================================================================================================--
+	
+/* gather from Lake */
+	declare @masterKey int = 4111 /* AASA 3-8 */
+	declare @SQLText nvarchar(max) = ''
+	select  @SQLText += 'select processedKey, masterKey, studentKey, employeeKey, locationKey, logicalDelete, updatedWhen, updatedBy, '
+	select @SQLText += ( /* Add in column list, with dynamic column names */
+	select 'convert(varchar(255), ' + columnName + ') as [' + fieldName + '],'
+	from dw3_lake.dbo.ImportLayout il
+	inner join dw3_lake.dbo.ImportMaster im on im.masterKey = il.masterKey
+	where 1 = 1
+		and im.masterKey = @masterKey for xml path(''), root('MyString'), type 
+			).value('/MyString[1]','varchar(max)') 
+	select @SQLText = left(@SQLText, len(@SQLText) - 1) + ' ' /* Remove trailing comma */
+	select @SQLText += ', colText into ##aasa FROM dw3_lake.dbo.ImportProcessed where 1 = 1 and masterKey = ' + convert(varchar, @masterKey)
+	-- select @SQLText
+	
+	if object_id('tempdb.dbo.##aasa', 'U') is not null drop table ##aasa
+	execute sp_executesql @SQLText
+	/* 5686 - 00:00 */
+	
+	if object_id('tempdb.dbo.#aasa', 'U') is not null drop table #aasa
+	select * into #aasa from ##aasa where 1 = 1 and isnull(logicalDelete, 0) = 0
+	/* 5686 - 00:00 */
+	
+	if object_id('tempdb.dbo.##aasa', 'U') is not null drop table ##aasa
+	-- select * from #aasa
+
+/* temp table of only columns needed */
+	if object_id('tempdb.dbo.#aasa2', 'U') is not null drop table #aasa2
+	select distinct
+		aa.processedKey,
+		aa.studentKey, 
+		stu.studentNumber, 
+		loc.locationKey, 
+		loc.sourceKey as schoolID, 
+		aa.[Sch Code],
+		aa.[Test Code],
+		aa.[TEST DATE (MM/DD/YYYY)], 
+		aa.[Grade of Student], 
+		aa.[Total Raw Score], 
+		aa.[Total Scale Score], 
+		aa.[Total Performance], 
+		aa.[RC1 Raw Score], 
+		aa.[RC1 Scale Score], 
+		aa.[RC1 Perf Lvl], 
+		aa.[RC2 Raw Score], 
+		aa.[RC2 Scale Score], 
+		aa.[RC2 Perf Lvl], 
+		aa.[RC3 Raw Score], 
+		aa.[RC3 Scale Score], 
+		aa.[RC3 Perf Lvl], 
+		aa.[RC4 Raw Score], 
+		aa.[RC4 Scale Score], 
+		aa.[RC4 Perf Lvl], 
+		stu.sourceKey as personID, 
+		aa.[Status], 
+		aa.[Move On When Reading Requirement], 
+		aa.[Move On When Reading Scale Score]
+	into #aasa2
+	from #aasa aa
+	inner join dw3_live.dbo.DimStudent stu on stu.studentKey = aa.studentKey
+	left join dw3_live.dbo.DimLocation loc on loc.entityID = convert(int, aa.[Sch Code])
+	where 1 = 1
+	/* 5686 - 00:00 */
+
+	-- select * from #aasa2
+
+/* create mapping table */
+	if object_id('tempdb.dbo.#categoryMapping', 'U') IS NOT NULL drop table #categoryMapping
+	create table #categoryMapping (testSubject varchar(max), testCode varchar(max), reportCat varchar(max), subTestName varchar(max))
+	insert into #categoryMapping (testSubject, testCode, reportCat, subTestName)
+	values 
+		('ELA', 'AZAE03', 'RC1', 'Reading for Information'), 
+		('ELA', 'AZAE03', 'RC2', 'Reading for Literature'), 
+		('ELA', 'AZAE03', 'RC3', 'Writing and Language'), 
+		('ELA', 'AZAE04', 'RC1', 'Reading for Information'),
+		('ELA', 'AZAE04', 'RC2', 'Reading for Literature'),
+		('ELA', 'AZAE04', 'RC3', 'Writing and Language'),
+		('ELA', 'AZAE05', 'RC1', 'Reading for Information'),
+		('ELA', 'AZAE05', 'RC2', 'Reading for Literature'),
+		('ELA', 'AZAE05', 'RC3', 'Writing and Language'),
+		('ELA', 'AZAE06', 'RC1', 'Reading for Information'),
+		('ELA', 'AZAE06', 'RC2', 'Reading for Literature'),
+		('ELA', 'AZAE06', 'RC3', 'Writing and Language'),
+		('ELA', 'AZAE07', 'RC1', 'Reading for Information'),
+		('ELA', 'AZAE07', 'RC2', 'Reading for Literature'),
+		('ELA', 'AZAE07', 'RC3', 'Writing and Language'),
+		('ELA', 'AZAE08', 'RC1', 'Reading for Information'),
+		('ELA', 'AZAE08', 'RC2', 'Reading for Literature'),
+		('ELA', 'AZAE08', 'RC3', 'Writing and Language'),
+		('Math', 'AZAM03', 'RC1', 'Operations, Algebraic Thinking, and Numbers in Base Ten'),
+		('Math', 'AZAM03', 'RC2', 'Numbers and Operations – Fractions'),
+		('Math', 'AZAM03', 'RC3', 'Measurement, Data, and Geometry'),
+		('Math', 'AZAM04', 'RC1', 'Operations, Algebraic Thinking, and Numbers in Base Ten'),
+		('Math', 'AZAM04', 'RC2', 'Numbers and Operations – Fractions'),
+		('Math', 'AZAM04', 'RC3', 'Measurement, Data, and Geometry'),
+		('Math', 'AZAM05', 'RC1', 'Operations, Algebraic Thinking, and Numbers in Base Ten'),
+		('Math', 'AZAM05', 'RC2', 'Numbers and Operations – Fractions'),
+		('Math', 'AZAM05', 'RC3', 'Measurement, Data, and Geometry'),
+		('Math', 'AZAM06', 'RC1', 'Ratio and Proportional Relationships'),
+		('Math', 'AZAM06', 'RC2', 'The Number System'),
+		('Math', 'AZAM06', 'RC3', 'Expressions and Equations'),
+		('Math', 'AZAM06', 'RC4', 'Geometry, Statistics and Probability'),
+		('Math', 'AZAM07', 'RC1', 'Ratio and Proportional Relationships'),
+		('Math', 'AZAM07', 'RC2', 'The Number System'),
+		('Math', 'AZAM07', 'RC3', 'Expressions and Equations'),
+		('Math', 'AZAM07', 'RC4', 'Geometry, Statistics and Probability'),
+		('Math', 'AZAM08', 'RC1', 'Expressions and Equations'),
+		('Math', 'AZAM08', 'RC2', 'Functions'),
+		('Math', 'AZAM08', 'RC3', 'Geometry'),
+		('Math', 'AZAM08', 'RC4', 'Statistics and Probability and The Number System ')
+	/* 40 - 00:00 */
+
+	-- select * from #categoryMapping
+
+/* vertical */
+	if object_id('tempdb.dbo.#aasaVert', 'U') IS NOT NULL drop table #aasaVert
+	create table #aasaVert
+		(studentKey int, studentNumber varchar(max), personID int, locationKey int, schoolID int, testCode varchar(max), testDate varchar(max), gradeLevel varchar(max), 
+		testSubject varchar(max), testName varchar(max), subtestName varchar(max), rawScore varchar(max), scaleScore varchar(max), performance varchar(max), [status] int)
+		
+/* overall */
+	insert into #aasaVert
+		(studentKey, studentNumber, personID, locationKey, schoolID, testCode, testDate, gradeLevel, 
+		testName, testSubject, subtestName, rawScore, scaleScore, performance, status)
+	select distinct
+		a1.studentKey, /* studentKey */
+		a1.studentNumber, /* studentNumber */
+		a1.personID, /* personID */
+		a1.locationKey,
+		a1.schoolID, /* schoolID */
+		a1.[Test Code], /* testCode */
+		a1.[TEST DATE (MM/DD/YYYY)], /* testDate */
+		a1.[Grade of Student], /* gradeLevel */
+		testName = 'AASA', /* testName */
+		testSubject = 
+			case
+				when a1.[Test Code] like 'AZAE%' then 'ELA'
+				when a1.[Test Code] like 'AZAM%' then 'Math'
+				else 'NA'
+			end, /* testSubject */
+		subtestName = 
+			case
+				when a1.[Test Code] like 'AZAE03' then 'ELA'
+				when a1.[Test Code] like 'AZAM03' then 'Math'
+				else 'NA'
+			end, /* subtestName */
+		a1.[Total Raw Score], /* rawScore */
+		a1.[Total Scale Score],	/* scaleScore */
+		a1.[Total Performance],	/* performance */
+		a1.[Status]
+	from #aasa2 a1
+	where 1 = 1
+		and (a1.[Total Raw Score] is not null
+			or a1.[Total Scale Score] is not null
+			or a1.[Total Performance] is not null)
+	/* 5605 - 00:00 */
+
+-- select * from #aasaVert
+
+/* Subtest 1 */
+	insert into #aasaVert
+		(studentKey, studentNumber, personID, locationKey, schoolID, testCode, testDate, gradeLevel, 
+		testName, testSubject, subtestName, rawScore, scaleScore, performance, status)
+	select distinct
+		a1.studentKey, /* studentKey */
+		a1.studentNumber, /* studentNumber */
+		a1.personID, /* personID */
+		a1.locationKey,
+		a1.schoolID, /* schoolID */
+		a1.[Test Code], /* testCode */
+		a1.[TEST DATE (MM/DD/YYYY)], /* testDate */
+		a1.[Grade of Student], /* gradeLevel */
+		testSubject = 
+			case
+				when a1.[Test Code] like 'AZAE%' then 'ELA'
+				when a1.[Test Code] like 'AZAM%' then 'Math'
+				else 'NA'
+			end, /* testSubject */
+		testName = 'AASA', /* testName */
+		subtestName = map.subTestName, /* subtestName */
+		a1.[RC1 Raw Score], /* rawScore */
+		a1.[RC1 Scale Score],	/* scaleScore */
+		a1.[RC1 Perf Lvl],	/* performance */
+		a1.[Status]
+	from #aasa2 a1
+	left join #categoryMapping map on map.testCode = a1.[Test Code]
+		and map.reportCat = 'RC1'
+		and map.testSubject =
+			case
+				when a1.[Test Code] like 'AZAE%' then 'ELA'
+				when a1.[Test Code] like 'AZAM%' then 'Math'
+			end
+	where 1 = 1
+		and (a1.[RC1 Raw Score] is not null
+			or a1.[RC1 Scale Score] is not null
+			or a1.[RC1 Perf Lvl] is not null)
+	/* 5605 - 00:00 */
+
+-- select * from #aasaVert
+
+/* Subtest 2 */
+	insert into #aasaVert
+		(studentKey, studentNumber, personID, locationKey, schoolID, testCode, testDate, gradeLevel, 
+		testName, testSubject, subtestName, rawScore, scaleScore, performance, status)
+	select distinct
+		a1.studentKey, /* studentKey */
+		a1.studentNumber, /* studentNumber */
+		a1.personID, /* personID */
+		a1.locationKey,
+		a1.schoolID, /* schoolID */
+		a1.[Test Code], /* testCode */
+		a1.[TEST DATE (MM/DD/YYYY)], /* testDate */
+		a1.[Grade of Student], /* gradeLevel */
+		testSubject = 
+			case
+				when a1.[Test Code] like 'AZAE%' then 'ELA'
+				when a1.[Test Code] like 'AZAM%' then 'Math'
+				else 'NA'
+			end, /* testSubject */
+		testName = 'AASA', /* testName */
+		subtestName = map.subTestName, /* subtestName */
+		a1.[RC2 Raw Score], /* rawScore */
+		a1.[RC2 Scale Score],	/* scaleScore */
+		a1.[RC2 Perf Lvl],	/* performance */
+		a1.[Status]
+	from #aasa2 a1
+	left join #categoryMapping map on map.testCode = a1.[Test Code]
+		and map.reportCat = 'RC2'
+		and map.testSubject =
+			case
+				when a1.[Test Code] like 'AZAE%' then 'ELA'
+				when a1.[Test Code] like 'AZAM%' then 'Math'
+			end
+	where 1 = 1
+		and (a1.[RC2 Raw Score] is not null
+			or a1.[RC2 Scale Score] is not null
+			or a1.[RC2 Perf Lvl] is not null)
+	/* 5605 - 00:00 */
+
+-- select * from #aasaVert
+
+/* Subtest 3 */
+	insert into #aasaVert
+		(studentKey, studentNumber, personID, locationKey, schoolID, testCode, testDate, gradeLevel, 
+		testName, testSubject, subtestName, rawScore, scaleScore, performance, status)
+	select distinct
+		a1.studentKey, /* studentKey */
+		a1.studentNumber, /* studentNumber */
+		a1.personID, /* personID */
+		a1.locationKey,
+		a1.schoolID, /* schoolID */
+		a1.[Test Code], /* testCode */
+		a1.[TEST DATE (MM/DD/YYYY)], /* testDate */
+		a1.[Grade of Student], /* gradeLevel */
+		testSubject = 
+			case
+				when a1.[Test Code] like 'AZAE%' then 'ELA'
+				when a1.[Test Code] like 'AZAM%' then 'Math'
+				else 'NA'
+			end, /* testSubject */
+		testName = 'AASA', /* testName */
+		subtestName = map.subTestName, /* subtestName */
+		a1.[RC3 Raw Score], /* rawScore */
+		a1.[RC3 Scale Score],	/* scaleScore */
+		a1.[RC3 Perf Lvl],	/* performance */
+		a1.[Status]
+	from #aasa2 a1
+	left join #categoryMapping map on map.testCode = a1.[Test Code]
+		and map.reportCat = 'RC3'
+		and map.testSubject =
+			case
+				when a1.[Test Code] like 'AZAE%' then 'ELA'
+				when a1.[Test Code] like 'AZAM%' then 'Math'
+			end
+	where 1 = 1
+		and (a1.[RC3 Raw Score] is not null
+			or a1.[RC3 Scale Score] is not null
+			or a1.[RC3 Perf Lvl] is not null)
+	/* 5605 - 00:00 */
+
+-- select * from #aasaVert
+
+/* Subtest 4 */
+	insert into #aasaVert
+		(studentKey, studentNumber, personID, locationKey, schoolID, testCode, testDate, gradeLevel, 
+		testName, testSubject, subtestName, rawScore, scaleScore, performance, status)
+	select distinct
+		a1.studentKey, /* studentKey */
+		a1.studentNumber, /* studentNumber */
+		a1.personID, /* personID */
+		a1.locationKey,
+		a1.schoolID, /* schoolID */
+		a1.[Test Code], /* testCode */
+		a1.[TEST DATE (MM/DD/YYYY)], /* testDate */
+		a1.[Grade of Student], /* gradeLevel */
+		testSubject = 
+			case
+				when a1.[Test Code] like 'AZAE%' then 'ELA'
+				when a1.[Test Code] like 'AZAM%' then 'Math'
+				else 'NA'
+			end, /* testSubject */
+		testName = 'AASA', /* testName */
+		subtestName = map.subTestName, /* subtestName */
+		a1.[RC4 Raw Score], /* rawScore */
+		a1.[RC4 Scale Score],	/* scaleScore */
+		a1.[RC4 Perf Lvl],	/* performance */
+		a1.[Status]
+	from #aasa2 a1
+	left join #categoryMapping map on map.testCode = a1.[Test Code]
+		and map.reportCat = 'RC4'
+		and map.testSubject =
+			case
+				when a1.[Test Code] like 'AZAE%' then 'ELA'
+				when a1.[Test Code] like 'AZAM%' then 'Math'
+			end
+	where 1 = 1
+		and (a1.[RC4 Raw Score] is not null
+			or a1.[RC4 Scale Score] is not null
+			or a1.[RC4 Perf Lvl] is not null)
+	/* 0 - 00:00 */
+
+-- select * from #aasaVert
+
+/* Move on When reading */
+	insert into #aasaVert
+		(studentKey, studentNumber, personID, locationKey, schoolID, testCode, testDate, gradeLevel, 
+		testName, testSubject, subtestName, rawScore, scaleScore, performance, status)
+	select distinct
+		a1.studentKey, /* studentKey */
+		a1.studentNumber, /* studentNumber */
+		a1.personID, /* personID */
+		a1.locationKey,
+		a1.schoolID, /* schoolID */
+		a1.[Test Code], /* testCode */
+		a1.[TEST DATE (MM/DD/YYYY)], /* testDate */
+		a1.[Grade of Student], /* gradeLevel */
+		testSubject = 
+			case
+				when a1.[Test Code] like 'AZAE%' then 'ELA'
+				when a1.[Test Code] like 'AZAM%' then 'Math'
+				else 'NA'
+			end, /* testSubject */
+		testName = 'AASA', /* testName */
+		subtestName = 'Move On When Reading', /* subtestName */
+		null, /* rawScore */
+		a1.[Move On When Reading Scale Score],	/* scaleScore */
+		a1.[Move On When Reading Requirement],	/* performance */
+		a1.[Status]
+	from #aasa2 a1
+	where 1 = 1
+		and (a1.[Move On When Reading Scale Score] is not null
+			or a1.[Move On When Reading Requirement] is not null)
+	/* 0 - 00:00 */
+
+-- select * from #aasaVert
+
+/* modify the temp table to better match IC data */
+	if object_id('tempdb.dbo.#aasa3', 'U') is not null drop table #aasa3
+	select distinct
+		a1.studentKey, 
+		a1.studentNumber, 
+		a1.personID, 
+		a1.locationKey,
+		a1.schoolID, 
+		a1.testCode, 
+		--a1.schoolID, 
+		a1.gradeLevel, 
+		a1.testSubject, 
+		a1.testName, 
+		a1.subtestName, 
+		a1.rawScore, 
+		a1.scaleScore, 
+		case
+			when a1.performance = '4' then 'Highly Proficient'
+			when a1.performance = '3' then 'Proficient'
+			when a1.performance = '2' then 'Partially Proficient'
+			when a1.performance = '1' then 'Minimally Proficient'
+			when a1.performance = 'Y' then 'Met'
+			when a1.performance = 'N' then 'Not Met'
+			when a1.[Status] = 1 then 'DNR'
+			when a1.[Status] = 2 then 'Incomplete'
+		end as performanceLevel,
+		case
+			/* Grade 03 ELA testIDs */
+			when a1.testCode = 'AZAE03' and testSubject = 'ELA' then 645
+			when a1.testCode = 'AZAE03' and subtestName like 'Reading for info%' then 646
+			when a1.testCode = 'AZAE03' and subtestName like 'Reading for lit%' then 647
+			when a1.testCode = 'AZAE03' and subtestName like 'Writing and Lang%' then 648
+			when a1.testCode = 'AZAE03' and subtestName like 'Move on when read%' then 649
+			/* Grade 03 MATH testIDs */
+			when a1.testCode = 'AZAM03' and testSubject = 'Math' then '650'
+			when a1.testCode = 'AZAM03' and subtestName like 'Operations, Alge%' then 651
+			when a1.testCode = 'AZAM03' and subtestName like 'Numbers and Oper%' then 652
+			when a1.testCode = 'AZAM03' and subtestName like 'Measurement, data%' then 653
+			/* Grade 04 ELA testIDs */
+			when a1.testCode = 'AZAE04' and testSubject = 'ELA' then 655
+			when a1.testCode = 'AZAE04' and subtestName like 'Reading for info%' then 656
+			when a1.testCode = 'AZAE04' and subtestName like 'Reading for lit%' then 657
+			when a1.testCode = 'AZAE04' and subtestName like 'Writing and Lang%' then 658
+			/* Grade 04 MATH testIDs */
+			when a1.testCode = 'AZAM04' and testSubject = 'Math' then 659
+			when a1.testCode = 'AZAM04' and subtestName like 'Operations, Alge%' then 660
+			when a1.testCode = 'AZAM04' and subtestName like 'Numbers and Oper%' then 661
+			when a1.testCode = 'AZAM04' and subtestName like 'Measurement, data%' then 662
+			/* Grade 05 ELA testIDs */
+			when a1.testCode = 'AZAE05' and testSubject = 'ELA' then 664
+			when a1.testCode = 'AZAE05' and subtestName like 'Reading for info%' then 665
+			when a1.testCode = 'AZAE05' and subtestName like 'Reading for lit%' then 666
+			when a1.testCode = 'AZAE05' and subtestName like 'Writing and Lang%' then 667
+			/* Grade 05 MATH testIDs */
+			when a1.testCode = 'AZAM05' and testSubject = 'Math' then 668
+			when a1.testCode = 'AZAM05' and subtestName like 'Operations, Alge%' then 669
+			when a1.testCode = 'AZAM05' and subtestName like 'Numbers and Oper%' then 670
+			when a1.testCode = 'AZAM05' and subtestName like 'Measurement, data%' then 671
+			/* Grade 06 ELA testIDs */
+			when a1.testCode = 'AZAE06' and testSubject = 'ELA' then 673
+			when a1.testCode = 'AZAE06' and subtestName like 'Reading for info%' then 674
+			when a1.testCode = 'AZAE06' and subtestName like 'Reading for lit%' then 675
+			when a1.testCode = 'AZAE06' and subtestName like 'Writing and Lang%' then 676
+			/* Grade 06 MATH testIDs */
+			when a1.testCode = 'AZAM06' and testSubject = 'Math' then 677
+			when a1.testCode = 'AZAM06' and subtestName like 'Ratio and proportional%' then 678
+			when a1.testCode = 'AZAM06' and subtestName like 'The Number system%' then 679
+			when a1.testCode = 'AZAM06' and subtestName like 'Expressions and Equ%' then 680
+			when a1.testCode = 'AZAM06' and subtestName like 'Geometry, statistics%' then 681
+			/* Grade 07 ELA testIDs */
+			when a1.testCode = 'AZAE07' and testSubject = 'ELA' then 683
+			when a1.testCode = 'AZAE07' and subtestName like 'Reading for info%' then 684
+			when a1.testCode = 'AZAE07' and subtestName like 'Reading for lit%' then 685
+			when a1.testCode = 'AZAE07' and subtestName like 'Writing and Lang%' then 686
+			/* Grade 07 MATH testIDs */
+			when a1.testCode = 'AZAM07' and testSubject = 'Math' then 687
+			when a1.testCode = 'AZAM07' and subtestName like 'Ratio and proportional%' then 688
+			when a1.testCode = 'AZAM07' and subtestName like 'The Number system%' then 689
+			when a1.testCode = 'AZAM07' and subtestName like 'Expressions and Equ%' then 690
+			when a1.testCode = 'AZAM07' and subtestName like 'Geometry, statistics%' then 691
+			/* Grade 08 ELA testIDs */
+			when a1.testCode = 'AZAE08' and testSubject = 'ELA' then 693
+			when a1.testCode = 'AZAE08' and subtestName like 'Reading for info%' then 694
+			when a1.testCode = 'AZAE08' and subtestName like 'Reading for lit%' then 695
+			when a1.testCode = 'AZAE08' and subtestName like 'Writing and Lang%' then 696
+			/* Grade 08 MATH testIDs */
+			when a1.testCode = 'AZAM08' and testSubject = 'Math' then 697
+			when a1.testCode = 'AZAM08' and subtestName like 'Expressions and Equ%' then 698
+			when a1.testCode = 'AZAM08' and subtestName like 'Functions%' then 699
+			when a1.testCode = 'AZAM08' and subtestName like 'Geometry%' then 700
+			when a1.testCode = 'AZAM08' and subtestName like 'Statistics and probab%' then 701
+			else null
+		end as testNumber, 
+		case
+			/* Grade 03 ELA Parent testIDs */
+			when a1.testCode = 'AZAE03' and testSubject = 'ELA' then 644
+			when a1.testCode = 'AZAE03' and testSubject = 'AASA' then 645
+			/* Grade 03 MATH Parent testIDs */
+			when a1.testCode = 'AZAM03' and testSubject = 'Math' then 644
+			when a1.testCode = 'AZAM03' and testSubject = 'AASA' then 650
+			/* Grade 04 ELA Parent testIDs */
+			when a1.testCode = 'AZAE04' and testSubject = 'ELA' then 654
+			when a1.testCode = 'AZAE04' and testSubject = 'AASA' then 655
+			/* Grade 04 MATH Parent testIDs */
+			when a1.testCode = 'AZAM04' and testSubject = 'Math' then 654
+			when a1.testCode = 'AZAM04' and testSubject = 'AASA' then 659
+			/* Grade 05 ELA Parent testIDs */
+			when a1.testCode = 'AZAE05' and testSubject = 'ELA' then 663
+			when a1.testCode = 'AZAE05' and testSubject = 'AASA' then 664
+			/* Grade 05 MATH Parent testIDs */
+			when a1.testCode = 'AZAM05' and testSubject = 'Math' then 663
+			when a1.testCode = 'AZAM05' and testSubject = 'AASA' then 668
+			/* Grade 06 ELA Parent testIDs */
+			when a1.testCode = 'AZAE06' and testSubject = 'ELA' then 672
+			when a1.testCode = 'AZAE06' and testSubject = 'AASA' then 673
+			/* Grade 06 MATH Parent testIDs */
+			when a1.testCode = 'AZAM06' and testSubject = 'Math' then 672
+			when a1.testCode = 'AZAM06' and testSubject = 'AASA' then 677
+			/* Grade 07 ELA Parent testIDs */
+			when a1.testCode = 'AZAE07' and testSubject = 'ELA' then 682
+			when a1.testCode = 'AZAE07' and testSubject = 'AASA' then 683
+			/* Grade 07 MATH Parent testIDs */
+			when a1.testCode = 'AZAM07' and testSubject = 'Math' then 682
+			when a1.testCode = 'AZAM07' and testSubject = 'AASA' then 687
+			/* Grade 08 ELA Parent testIDs */
+			when a1.testCode = 'AZAE08' and testSubject = 'ELA' then 692
+			when a1.testCode = 'AZAE08' and testSubject = 'AASA' then 693
+			/* Grade 08 MATH Parent testIDs */
+			when a1.testCode = 'AZAM08' and testSubject = 'Math' then 692
+			when a1.testCode = 'AZAM08' and testSubject = 'AASA' then 697
+			else null
+		end as parentNumber,
+		convert(date, dw3_lake.dbo.udf_convertDate(a1.testDate)) as testDate
+	into #aasa3
+	from #aasaVert a1
+	where 1 = 1
+	/* 22240 - 00:02 */
+
+--============================================================================================================================--
+/* Temp table to IC */
+--============================================================================================================================--	
+
+/* IC parent tests */
+	if object_id('tempdb.dbo.#testScore', 'U') is not null drop table #testScore
+	select distinct
+		ts.scoreID, ts.parentID, ts.testID, ts.personID, ts.[date] as testDate, ts.scaleScore, ts.comments, ts.testingGrade, ts.schoolID
+	into #testScore
+	from [CHANDLERAZ-DB].chandler.dbo.TestScore ts with(nolock)
+	where ts.testID in (644,654,663,672,682,692)
+	/**/
+
+	-- select * from #testScore
+	insert into [CHANDLERAZ-DB].chandler.dbo.TestScore (testID, personID, districtID, [date], comments, testingGrade, schoolID)
+	select distinct
+		case 
+			when a.testCode like '%03' then 644
+			when a.testCode like '%04' then 654
+			when a.testCode like '%05' then 663
+			when a.testCode like '%06' then 672
+			when a.testCode like '%07' then 682
+			when a.testCode like '%08' then 692
+			else null
+		end, a.personID, 71, a.testDate, 'AASA Imported on ' + convert(varchar,GETDATE(),101), a.gradeLevel, a.schoolID
+	from #aasa3 a
+	left join #testScore ts on ts.personID = a.personID
+		and (convert(int,ts.testID) = convert(int,a.parentNumber))
+		and (dbo.udf_convertDate(ts.testDate) = dbo.udf_convertDate(a.testDate))
+	where 1 = 1
+		and ts.scoreID is null
+		and a.parentNumber in (644,654,663,672,682,692)
+		and a.personID is not null
+
+/* pull ELA/MATH subtests */
+	if object_id('tempdb.dbo.#testScore2', 'U') is not null drop table #testScore2
+	select distinct
+		scoreID, parentID, testID, personID, districtID, [date] as testDate, scaleScore, result, comments, testingSchool, testingGrade
+	into #testScore2
+	from [CHANDLERAZ-DB].chandler.dbo.TestScore with(nolock)
+	where 1=1
+		and testID in (644,645,646,647,648,649,650,651,652,653,654,655,656,657,658,659,660,661,662,663,664,665,666,667,668,669,670,671,672,
+									 673,674,675,676,677,678,679,680,681,682,683,684,685,686,687,688,689,690,691,692,693,694,695,696,697,698,699,	700,701)
+
+	insert into [CHANDLERAZ-DB].chandler.dbo.TestScore
+		(parentID, testID, personID, districtID, date, rawScore, scaleScore, result, comments, testingGrade, schoolID)
+	select distinct
+		ts.scoreID, a.testNumber, a.personID, 71, dbo.udf_convertDate(a.testDate), a.rawScore, a.scaleScore, a.performanceLevel, 'AASA Imported on ' + convert(varchar,GETDATE(),101), a.gradeLevel, a.schoolID
+	from #aasa3 a
+	inner join #testScore2 ts on ts.personID = a.personID
+		and (convert(int,ts.testID) = convert(int,a.parentNumber))
+	left join #testScore2 ts2 on ts2.personID = a.personID
+		and (convert(int,ts2.testID) = convert(int,a.testNumber))
+		and (ts.scoreID = ts2.parentID)
+		and (dbo.udf_convertDate(ts2.testdate) = dbo.udf_convertDate(a.testDate))
+	where 1 = 1
+		and ts2.scoreID is null
+
+/* Pull child tests of ELA/MATH */
+if object_id('tempdb.dbo.#testScore3', 'U') is not null drop table #testScore3
+	select distinct
+		scoreID, parentID, testID, personID, districtID, [date] as testDate, scaleScore, result, comments, testingSchool, testingGrade
+	into #testScore3
+	from [CHANDLERAZ-DB].chandler.dbo.TestScore with(nolock)
+	where 1=1
+		and testID in (644,645,646,647,648,649,650,651,652,653,654,655,656,657,658,659,660,661,662,663,664,665,666,667,668,669,670,671,672,
+									 673,674,675,676,677,678,679,680,681,682,683,684,685,686,687,688,689,690,691,692,693,694,695,696,697,698,699,700,701)
+
+	insert into [CHANDLERAZ-DB].chandler.dbo.TestScore
+		(parentID, testID, personID, districtID, date, rawScore, scaleScore, result, comments, testingGrade, schoolID)
+	select distinct
+		ts.scoreID, a.testNumber, a.personID, 71, dbo.udf_convertDate(a.testDate), a.rawScore, a.scaleScore, a.performanceLevel, 'AASA Imported on ' + convert(varchar,GETDATE(),101), a.gradeLevel, a.schoolID
+	from #aasa3 a
+	inner join #testScore3 ts on ts.personID = a.personID
+		and (convert(int,ts.testID) = convert(int,a.parentNumber))
+	left join #testScore3 ts3 on ts3.personID = a.personID
+		and (convert(int,ts3.testID) = convert(int,a.testNumber))
+		and (ts.scoreID = ts3.parentID)
+		and (dbo.udf_convertDate(ts3.testdate) = dbo.udf_convertDate(a.testDate))
+	where 1 = 1
+		and ts3.scoreID is null
+
+END
