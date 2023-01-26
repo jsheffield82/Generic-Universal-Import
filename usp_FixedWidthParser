@@ -1,0 +1,145 @@
+USE [dw3_lake]
+GO
+/****** Object:  StoredProcedure [dbo].[usp_FixedWidthParser]    Script Date: 1/26/2023 10:09:46 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+ALTER PROCEDURE [dbo].[usp_FixedWidthParser] (
+	@masterKey int) AS
+BEGIN
+ /******************************************************************************************
+** Name:  usp_SSRSStudentLookupLive
+** Desc:  Stored Procedure for SSRS Student Lookup
+** Auth:  RRN
+** Date:  08/08/2016
+**************************
+** Change History
+**************************
+** PR   Date			Author		Description	
+** --   ----------		-------		------------------------------------
+** 1    08/08/2016      JGS			Creation of stored procedure
+******************
+** TO DO:
+******************
+
+*******************************************************************************************/
+SET NOCOUNT ON;
+
+/* testing variables */
+	-- declare @masterKey int
+	-- set @masterKey = 1
+
+/* delcare variables */
+	declare @startPosition int
+	declare @endPosition int
+	declare @positionLength int
+	declare @row int = 1
+	declare @rowTotal int 
+	declare @column int
+	declare @columnTotal int
+	declare @SQLText nvarchar(max)
+	declare @stagingKey int
+	declare @layoutKey int
+
+	/* setting first row */
+		set @row = 1
+	/* finding total rows from the staging rows */
+		set @rowTotal = (select count(stagingKey)
+			from dw3_lake.dbo.ImportStaging
+			where masterKey = @masterKey)
+	/* create rowKey for row loop */
+		/* drops the temp table if it already exists */
+			if object_id('tempdb..#stagingRow') is not null
+				exec ('drop table #stagingRow');
+			create table #stagingRow
+				(rowKey int identity (1,1) not null, stagingKey int) 
+			insert into #stagingRow (stagingKey)
+			select stagingKey from dw3_lake.dbo.ImportStaging
+			where masterKey = @masterKey
+	/* create colKey for column loop */
+		/* drops the temp table if it already exists */
+			if object_id('tempdb..#layoutColumn') is not null
+				exec ('drop table #layoutColumn');
+			create table #layoutColumn
+				(colKey int identity (1,1) not null, layoutKey int) 
+			insert into #layoutColumn (layoutKey)
+			select layoutKey from dw3_lake.dbo.ImportLayout 
+			where masterKey = @masterKey
+			order by columnName
+/* loop to go through rows of the table */
+	while (@row <= @rowTotal)
+	begin
+		/* setting stagingKey variable */
+			set @stagingKey = (select stagingKey
+				from #stagingRow
+				where rowKey = @row)
+		/* setting first column */
+			set @column = 1
+		/* finding total columns from the layout columns */
+			set @columnTotal = (select count(layOutKey)
+				from dw3_lake.dbo.ImportLayout
+				where masterKey = @masterKey)
+		/* set variable each time it goes through the row loop */
+			set @SQLText = 'update dw3_lake.dbo.ImportStaging set'
+		/* loop to go through the colText column of that row */
+		while (@column <= @columnTotal)
+		begin
+			/* setting layoutKey variable */
+				set @layoutKey = (select layoutKey
+					from #layoutColumn
+					where colKey = @column)
+			/* setting startPosition */
+				set @startPosition = (select startPosition 
+					from dw3_lake.dbo.ImportLayout
+					where masterKey = @masterKey
+						and layoutKey = @layoutKey)
+			/* setting endPosition value */
+				set @endPosition = (select endPosition 
+					from dw3_lake.dbo.ImportLayout
+					where masterKey = @masterKey
+						and layoutKey = @layoutKey)
+			/* setting positionLength value */
+				set @positionLength = (select (endPosition + 1 - startPosition) /* add one to endPosition to subtract startPosition to get the length */
+					from dw3_lake.dbo.ImportLayout
+					where masterKey = @masterKey
+						and layoutKey = @layoutKey)
+			/* parsing the column based on the position numbers */
+			if @column = @columnTotal
+				/* if the column is at the end no comma */
+				begin
+					select @SQLText += (
+						select
+							' col' + CONVERT(VARCHAR, FORMAT(@column, '000')) + ' = case when ''' + ltrim(rtrim(replace(substring(colText, @startPosition, @positionLength), '''', ''''''))) + ''' = '''' then null
+							else ''' + ltrim(rtrim(replace(substring(colText, @startPosition, @positionLength), '''', ''''''))) + ''' end'
+						from dw3_lake.dbo.ImportStaging
+						where stagingKey = @stagingKey)
+				end
+				else
+				/* if the row is not the last, adds comma at end */
+				begin
+					select @SQLText += (
+						select
+							/*' col' + CONVERT(VARCHAR, FORMAT(@column, '000')) + ' = ''' + ltrim(rtrim(replace(substring(colText, @startPosition, @positionLength), '''', ''''''))) + ''','*/
+							' col' + CONVERT(VARCHAR, FORMAT(@column, '000')) + ' = case when ''' + ltrim(rtrim(replace(substring(colText, @startPosition, @positionLength), '''', ''''''))) + ''' = '''' then null
+							else ''' + ltrim(rtrim(replace(substring(colText, @startPosition, @positionLength), '''', ''''''))) + ''' end ,'
+						from dw3_lake.dbo.ImportStaging
+						where stagingKey = @stagingKey)
+				end
+			/* setting variable increment */
+				set @column = @column + 1;
+		end /* end of column loop */
+		select @SQLText += ' where stagingKey = ' + convert(varchar, @stagingKey)
+		exec sp_executesql @SQLText
+		--select @SQLText
+		/* setting variable increment */
+			set @row = @row + 1;
+	end /* end of row loop */
+
+-- execute dw3_lake.dbo.usp_getImportStagingWithRealColumnNames 1
+
+-- select top 10 * from dw3_lake.dbo.ImportStaging where masterKey = 1
+END
+
