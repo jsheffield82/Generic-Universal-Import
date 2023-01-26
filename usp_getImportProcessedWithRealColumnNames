@@ -1,0 +1,39 @@
+USE [dw3_lake]
+GO
+/****** Object:  StoredProcedure [dbo].[usp_getImportProcessedWithRealColumnNames]    Script Date: 1/26/2023 10:11:33 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[usp_getImportProcessedWithRealColumnNames]
+@masterKey INT
+AS
+BEGIN
+       
+	   
+
+	   --DECLARE @masterKey INT = 3
+       DECLARE @SQLText NVARCHAR(MAX) = ''
+
+       SELECT  @SQLText += 'SELECT processedKey, masterKey, studentKey, employeeKey, locationKey, logicalDelete, updatedWhen, updatedBy, '
+
+       SELECT  @SQLText += ( -- Add in column list, with dynamic column names.
+                                  SELECT  'CONVERT(varchar(255), ' + columnName + ') AS [' + fieldName + '],'
+                                  FROM importLayout il
+                                  JOIN importMaster im ON (im.masterKey = il.masterKey)
+                                  WHERE im.masterKey = @masterKey FOR XML PATH(''),root('MyString'), type 
+     ).value('/MyString[1]','varchar(max)') 
+                           
+       SELECT  @SQLText = LEFT(@SQLText, LEN(@SQLText) - 1) + ' ' -- Remove trailing comma
+
+       SELECT  @SQLText += ', colText FROM importProcessed WHERE masterKey = ' + CONVERT(VARCHAR, @masterKey)
+
+       --select   @SQLText
+       EXEC    sp_executesql @SQLText
+
+
+
+
+END
+
+
