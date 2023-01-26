@@ -1,0 +1,22 @@
+	/* ATHELTICS HS PARENT SURVEY = 4114 */
+		declare @masterKey1 int = 4114
+		declare @SQLText1 nvarchar(max) = ''
+		select @SQLText1 += 'select processedKey, masterKey, studentKey, employeeKey, locationKey, logicalDelete, workingTable, updatedWhen, updatedBy, '
+		select @SQLText1 += ( /* Add in column list, with dynamic column names */
+		select 'convert(varchar(255), ' + columnName + ') as [' + fieldName + '],'
+		from dw3_lake.dbo.ImportLayout il
+		inner join dw3_lake.dbo.ImportMaster im on im.masterKey = il.masterKey
+		where 1 = 1
+			and im.masterKey = @masterKey1 for xml path(''), root('MyString'), type 
+			 ).value('/MyString[1]','varchar(max)') 
+		select @SQLText1 = left(@SQLText1, len(@SQLText1) - 1) + ' ' /* Remove trailing comma */
+		select @SQLText1 += ', colText into ##survey1 from dw3_lake.dbo.ImportProcessed where 1 = 1 and masterKey = ' + convert(varchar, @masterKey1) + ' and isnull(logicalDelete, 0) = 0 and isnull(workingTable, 0) = 0'
+		-- select @SQLText1
+		if object_id('tempdb.dbo.##survey1', 'U') is not null drop table ##survey1
+		execute sp_executesql @SQLText1
+		if object_id('tempdb.dbo.#survey1', 'U') is not null drop table #survey1
+		select * into #survey1 from ##survey1 where 1 = 1 and isnull(logicalDelete, 0) = 0 and isnull(workingTable, 0) = 0
+		/* 1208 - 00:00 */
+		if object_id('tempdb.dbo.##survey1', 'U') is not null drop table ##survey1
+		-- select * from #survey1
+		/* 1208 - 00:00 */
