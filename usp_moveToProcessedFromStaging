@@ -1,0 +1,83 @@
+USE [dw3_lake]
+GO
+/****** Object:  StoredProcedure [dbo].[usp_moveToProcessedFromStaging]    Script Date: 1/26/2023 10:11:25 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [dbo].[usp_moveToProcessedFromStaging]
+@stagingKey INT = 0,
+@studentKey INT = 0,
+@employeeKey INT = 0,
+@locationKey INT = 0,
+@doNotProcess INT = 0,
+@comments NVARCHAR(MAX) = '',
+@updatedBy VARCHAR(100) = ''
+AS
+BEGIN
+
+--declare @stagingKey INT = 2880640,
+--		@studentKey INT = 773117,
+--		@employeeKey INT = 0,
+--		@locationKey INT = 0,
+--		@doNotProcess INT = 0,
+--		@updatedBy VARCHAR(100) = 'burkes.ja'		
+
+declare @processedKey INT = 0, /* USED FOR THE IMPORT AUDIT TABLE LATER */
+		@rowsInserted INT = 0, /* USED LATER FOR THE IMPORT AUDIT TABLE */
+		@masterKey INT = (SELECT DISTINCT masterKey FROM ImportStaging WHERE stagingKey = @stagingKey)
+declare @SQLText varchar(max)
+	
+if (@employeeKey <> 0 or @studentKey <> 0 or @locationKey <> 0 or @doNotProcess <> 0)
+begin
+
+	set @SQLText = 'declare @stagingKey int = ' + convert(varchar,@stagingKey) + ', @studentKey int = ' + convert(varchar,@studentKey) + ', '
+	set @SQLText += '        @employeeKey int = ' + convert(varchar,@employeeKey) + ', @locationKey int = ' + convert(varchar,@locationKey) + ', '
+	set @SQLText += '        @doNotProcess int = ' + convert(varchar,@doNotProcess) + ', @updatedBy varchar(100) = ''' + @updatedBy + '''; ' + char(10)
+	set @SQLText += 'if not exists (select * '
+	set @SQLText += 'from importStaging ist	inner join importProcessed ipr on ipr.masterKey = ist.masterKey and ipr.studentKey = @studentKey '
+	set @SQLText += 'where ist.stagingKey = @stagingKey '
+	set @SQLText += (select 'and isnull(ist.' + columnName + ','''') = isnull(ipr.' + columnName + ', '''') '
+						from ImportLayout il
+						where il.masterKey = @masterKey
+						for xml path(''))
+	set @SQLText += ')' + char(10) + 'insert into importProcessed (masterKey, employeeKey, studentKey, locationKey, '
+	set @SQLText += (select columnName + ','
+						from ImportLayout il
+						where il.masterKey = @masterKey
+						for xml path(''))
+	set @SQLText += ' colText, updatedBy, updatedWhen, logicalDelete) ' + char(10)
+	set @SQLText += 'select ist.masterKey, case when @employeeKey = 0 then null else @employeeKey end as employeeKey, '
+	set @SQLText += ' case when @studentKey = 0 then null else @studentKey end as studentKey, case when @locationKey = 0 then null else @locationKey end as locationKey, '
+	set @SQLText += (select 'ist.' + columnName + ','
+						from ImportLayout il
+						where il.masterKey = @masterKey
+						for xml path(''))
+	set @SQLText += ' ist.colText, @updatedBy, getdate(), @doNotProcess ' + char(10)
+	set @SQLText += 'from importStaging ist	'
+	set @SQLText += 'where ist.stagingKey = @stagingKey '
+	
+	execute (@SQLText)
+	--Get the number of rows inserted
+	set @rowsInserted = @@ROWCOUNT
+			
+	--Get the just inserted in processdKey record for later use
+	set @processedKey = SCOPE_IDENTITY()
+
+	--see if the @doNotProcess is set to 1 and there is a value in the @processedKey
+	if @doNotProcess = 1 and isnull(@processedKEY, 0) <> 0 and ISNULL(@rowsInserted,0) > 0
+		insert into ImportAudit (processedKey, columnName, oldValue, newValue, comments, updatedBy, updatedWhen)
+		select @processedKEY, 'logicalDelete', NULL, 1, @comments, @updatedBy, getdate()
+	--We must delete from importError to clear out all errors for this stagingKey
+	delete from importError where stagingKey = @stagingKey
+
+	--Then we can delete from importStaging as it has been moved to importProcessed
+	delete from importStaging where stagingKey = @stagingKey
+			
+end
+
+END
+
+
+
+
